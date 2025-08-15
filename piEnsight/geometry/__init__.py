@@ -1,1 +1,0 @@
-from piEnsight.geometry.io import read, write
