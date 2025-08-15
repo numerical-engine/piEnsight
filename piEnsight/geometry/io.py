@@ -6,97 +6,91 @@ def read(filename:str, format:str = "ascii",)-> Geometry:
     if format == "ascii":
         return read_ascii(filename)
     else:
-        return read_binary(filename)
-
-def read_nodeID_elementID(lines:list, current_idx:int, format:str) -> tuple:
-    if format == "ascii":
-        return read_nodeID_elementID_ascii(lines, current_idx)
-    else:
-        return read_nodeID_elementID_binary(lines, current_idx)
-
-def read_nodeID_elementID_ascii(lines:list, current_idx:int) -> tuple:
-    nodeID_option = lines[current_idx][:-1].split()[-1]
-    current_idx += 1
-    elementID_option = lines[current_idx][:-1].split()[-1]
-    current_idx += 1
-
-    return nodeID_option, elementID_option, current_idx
+        raise NotImplementedError("Binary format not supported yet")
 
 
-def read_nodeID_elementID_binary(lines:list, current_idx:int) -> tuple:
-    raise NotImplementedError("Binary format not supported")
+def read_ascii(filename:str)->Geometry:
+    def read_node_info(element_type:str, number_of_element:int, lines:list[str], current_idx:int)->any:
+        if element_type == "nsided":
+            raise NotImplementedError("nfaced element type is not supported yet")
+        elif element_type == "nfaced":
+            raise NotImplementedError("nfaced element type is not supported yet")
+        else:
+            node_info = [np.array([int(n)-1 for n in lines[current_idx+i].split()]) for i in range(number_of_element)]
+            current_idx += number_of_element
+        
+        return node_info, current_idx
 
-def read_ascii(filename:str) -> Geometry:
-    parts = [] #All Part in Geometry
+
     with open(filename, 'r') as file:
-        lines = file.readlines()[2:]
-    
+        lines = file.readlines()[4:] #Ignore 2 description lines, and assume node id and element id is assigned.
     current_idx = 0
-    nodeID_option, elementID_option, current_idx = read_nodeID_elementID(lines, current_idx, "ascii")
-    assert (nodeID_option == "assign") & (elementID_option == "assign"), "If they are off or ignore, please replace this function"
-    assert lines[current_idx][:-1] == "part", f"Found extension information. Please replace this code for strictical definition."
-    current_idx += 1
 
     last_idx = len(lines) - 1
-    while True:
-        # Read all parts information during EOF
-        current_idx += 1 #Ignore description line
-        name = lines[current_idx].strip() #Name of Part
-        current_idx += 2 #Ignore "coordinate"
+    parts = []
+    read_allParts = False
+    while True: #Read all parts
+        assert lines[current_idx].strip() == "part"
+        current_idx += 2 #Skip index line
+        part_name = lines[current_idx].strip() #Name of Part
+        current_idx += 2 #Skip "coordinates"
         number_of_nodes = int(lines[current_idx].strip()) #Number of Nodes
         current_idx += 1
-
-        ###Read node coordinates
-        xn = np.array([float(lines[current_idx+i].strip()) for i in range(number_of_nodes)])
+        x = np.array([float(lines[current_idx+i].strip()) for i in range(number_of_nodes)])
         current_idx += number_of_nodes
-        yn = np.array([float(lines[current_idx+i].strip()) for i in range(number_of_nodes)])
+        y = np.array([float(lines[current_idx+i].strip()) for i in range(number_of_nodes)])
         current_idx += number_of_nodes
-        zn = np.array([float(lines[current_idx+i].strip()) for i in range(number_of_nodes)])
+        z = np.array([float(lines[current_idx+i].strip()) for i in range(number_of_nodes)])
         current_idx += number_of_nodes
 
-        nodes = np.stack((xn, yn, zn), axis=-1) #Shape: (number_of_nodes, 3)
+        nodes = np.stack((x, y, z), axis=-1) #Shape: (number_of_nodes, 3)
 
-        ###Read elemet information
+        #Read all elements in a current part
         elements = []
-
-        flag = None
         while True:
             element_type = lines[current_idx].strip()
             current_idx += 1
-            number_of_elements = int(lines[current_idx].strip())
+            number_of_element = int(lines[current_idx].strip())
             current_idx += 1
-            for i in range(number_of_elements):
-                vertices = np.array([int(n)-1 for n in lines[current_idx+i].split()]) #Vertices of element
-                elements.append({"type": element_type, "node_ID": vertices})
-            current_idx += number_of_elements #Skip to next part
+            node_info, current_idx = read_node_info(element_type, number_of_element, lines, current_idx)
+            elements.append({"type":element_type, "number_of_element":number_of_element, "node_info":node_info})
 
             if current_idx >= last_idx:
-                flag = "finish"
-                parts.append(Part(name, nodes, elements))
+                parts.append(Part(part_name, nodes, elements))
+                read_allParts = True
                 break
+
             elif lines[current_idx].strip() == "part":
-                flag = "next_part"
-                current_idx += 1
-                parts.append(Part(name, nodes, elements))
+                parts.append(Part(part_name, nodes, elements))
                 break
         
-        if flag == "finish":
+        if read_allParts:
             break
     
     return Geometry(parts)
 
-
-def read_binary(filename:str) -> Geometry:
-    raise NotImplementedError
 
 
 def write(geometry:Geometry, filename:str, format:str = "ascii") -> None:
     if format == "ascii":
         write_ascii(geometry, filename)
     else:
-        write_binary(geometry, filename)
+        raise NotImplementedError("Binary format not supported yet")
+
 
 def write_ascii(geometry:Geometry, filename:str) -> None:
+    def write_nodeInfo(file, node_info:any, element_type:str)->None:
+        if element_type == "nsided":
+            raise NotImplementedError("nsided element type is not supported yet")
+        elif element_type == "nfaced":
+            raise NotImplementedError("nfaced element type is not supported yet")
+        else:
+            assert isinstance(node_info, np.ndarray), "Node info must be a numpy array"
+            s = ""
+            for a in (node_info+1):
+                s += f"{a} "
+            file.write(s[:-1] + "\n")
+
     with open(filename, 'w') as file:
         file.write("Ensight geometry file\n")
         file.write("Written by piEnsight\n")
@@ -116,13 +110,10 @@ def write_ascii(geometry:Geometry, filename:str) -> None:
             for nn in range(len(part.nodes)):
                 file.write(f"{part.nodes[nn, 2]}\n")
             
-            for element in part.elements:
-                file.write(f"{element['type']}\n")
-                file.write(f"{1}\n")
-                for n in element['node_ID']:
-                    file.write(f"{n+1} ")
-                file.write("\n")
-
-
-def write_binary(geometry:Geometry, filename:str) -> None:
-    raise NotImplementedError
+            current_id = 0
+            for element_id_def in part.elements_id_definition:
+                file.write(f"{element_id_def['type']}\n")
+                file.write(f"{element_id_def['number_of_elements']}\n")
+                for n in range(element_id_def['number_of_elements']):
+                    write_nodeInfo(file, part.elements[current_id+n]['node_info'], element_id_def['type'])
+                current_id += element_id_def['number_of_elements']
