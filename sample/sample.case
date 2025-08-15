@@ -1,0 +1,18 @@
+FORMAT
+type: ensight gold
+
+GEOMETRY
+model:          data/constant/geometry
+
+VARIABLE
+vector per element: 1  U               data/********/U
+scalar per element: 1  p               data/********/p
+
+TIME
+time set:               1
+number of steps:        2
+filename numbers:
+ 0            1000        
+time values:
+ 0.00000e+00  1.00000e+02 
+# end
