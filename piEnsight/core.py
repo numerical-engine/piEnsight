@@ -99,12 +99,29 @@ def write_variable_element(geom:Geometry, filename:str, var_name:str)->None:
                 data_element = data[element_start_idx[idx]:element_start_idx[idx+1]] if idx < (len(element_start_idx) - 1) else data[element_start_idx[idx]:]
                 for d in data_element:
                     file.write(f"{d}\n")
+    
+    def write_vector()->None:
+        with open(filename, 'w') as file:
+            file.write(f"{var_name}\n")
+            file.write("part\n")
+            file.write(f"{geom.id}\n")
 
+            for idx, te in enumerate(element_type):
+                file.write(f"{te}\n")
+                datax_element = data[element_start_idx[idx]:element_start_idx[idx+1],0] if idx < (len(element_start_idx) - 1) else data[element_start_idx[idx]:,0]
+                datay_element = data[element_start_idx[idx]:element_start_idx[idx+1],1] if idx < (len(element_start_idx) - 1) else data[element_start_idx[idx]:,1]
+                dataz_element = data[element_start_idx[idx]:element_start_idx[idx+1],2] if idx < (len(element_start_idx) - 1) else data[element_start_idx[idx]:,2]
+                for dx in datax_element:
+                    file.write(f"{dx}\n")
+                for dy in datay_element:
+                    file.write(f"{dy}\n")
+                for dz in dataz_element:
+                    file.write(f"{dz}\n")
 
     if data.ndim == 1:
         write_scalar()
     else:
-        raise NotImplementedError("Vector type is not supported yet.")
+        write_vector()
 
 def read_variable_element(geom:Geometry, filename:str, part_id:int, var_type:str)->np.ndarray:
     """Read element-wise variable data from a file.
@@ -142,10 +159,55 @@ def read_variable_element(geom:Geometry, filename:str, part_id:int, var_type:str
 
         return data
     
+    def read_vector(geom:Geometry, filename:str, part_id:int)->np.ndarray:
+        with open(filename, 'r') as file:
+            lines = file.readlines()[1:] #Ignore description line
+        
+        index_start = None
+        index_end = len(lines) - 1
+        for idx in range(len(lines)):
+            if lines[idx].strip() == "part":
+                idx += 1
+                if int(lines[idx].strip()) == part_id:
+                    index_start = idx + 1
+                    break
+        for idx in range(index_start, len(lines)):
+            if lines[idx].strip() == "part":
+                index_end = idx - 1
+                break
+        
+        lines = lines[index_start:index_end + 1]
+        element_info = geom.split_element_category()
+        element_num = [len(info[1]) for info in element_info]
+
+        datax = []
+        datay = []
+        dataz = []
+        current_idx = 0
+        for num in element_num:
+            current_idx += 1 #Ignore element type
+            dx = np.array([float(lines[current_idx + i].strip()) for i in range(num)])
+            current_idx += num
+            dy = np.array([float(lines[current_idx + i].strip()) for i in range(num)])
+            current_idx += num
+            dz = np.array([float(lines[current_idx + i].strip()) for i in range(num)])
+            current_idx += num
+            datax.append(dx)
+            datay.append(dy)
+            dataz.append(dz)
+
+        datax = np.concatenate(datax)
+        datay = np.concatenate(datay)
+        dataz = np.concatenate(dataz)
+
+        data = np.stack((datax, datay, dataz), axis=-1)
+
+        return data
+
     if var_type == "scalar":
         return read_scalar(geom, filename, part_id)
     else:
-        raise NotImplementedError(f"Variable type '{var_type}' is not supported yet.")
+        return read_vector(geom, filename, part_id)
 
 
 
