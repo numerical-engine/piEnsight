@@ -1,8 +1,10 @@
 import piEnsight
 
-geom = piEnsight.read_geometry("./sample/data/constant/geometry", "internalMesh")
-piEnsight.write_geometry(geom, "./test.geom", "internalMesh")
-geom.load_variable_element("./sample/data/00001000/p", "p", "scalar")
-geom.load_variable_element("./sample/data/00001000/U", "U", "vector")
-geom.export_variable_element("./test.p", "p")
-geom.export_variable_element("./test.U", "U")
+geom = piEnsight.read_geometries("./sample/data/constant/geometry")
+for i in range(len(geom)):
+    geom[i].load_variable_element("./sample/data/00001000/p", "p", "scalar")
+    geom[i].load_variable_element("./sample/data/00001000/U", "U", "vector")
+
+piEnsight.write_geometries("./geometry", geom)
+piEnsight.write_variable_element("./p", geom, "p", "scalar")
+piEnsight.write_variable_element("./U", geom, "U", "vector")

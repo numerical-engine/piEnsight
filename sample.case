@@ -1,9 +1,0 @@
-FORMAT
-type: ensight gold
-
-GEOMETRY
-model:          test.geom
-
-VARIABLE
-vector per element: 1  U               test.U
-scalar per element: 1  p               test.p

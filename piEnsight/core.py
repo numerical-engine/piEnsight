@@ -1,344 +1,282 @@
 import numpy as np
-import sys
 from piEnsight import utils
-
+import sys
+from piEnsight import config
+from copy import deepcopy
 class Geometry:
-    """Class for handling geometric operations.
+    """Represents the geometry of a mesh.
 
     Attributes:
-        id (int): The ID of the part.
-        name (str): The name of the geometry.
-        nodes (np.ndarray): The coordinates of the mesh nodes.
-        elements (list[dict]): The mesh elements, each represented as a dictionary which keys are
-            "type" (str): The type of the element (e.g., "hexa8", "penta6").
-            "structure" (any): The structure is a numpy array of integers representing the element connectivity except the case of "nsided" and "nfaced".
-        variables_element (dict): Element-wise variables, where keys are
+        filename (str): The name of the file containing the mesh geometry.
+        id (int): The identifier for the part of the mesh.
+        name (str): The name of the part of the mesh.
+        dim (int): The dimension of the part of the mesh.
+        nodes (np.ndarray): The nodes of the part of the mesh.
+        elements (list[list[np.ndarray]]): The elements of the part of the mesh. All elements are converted to nsided (if dim = 2) or nfaced (if dim = 3).
+            Each element of the list is a numpy array representing polygons.
+            These polygons are defined by their vertex indices which starts from 0.
+        variables_element (dict[str, np.ndarray], optional): Element-wise variables. Defaults to {}. Each keys are
             "name" (str): The name of the variable.
-            "data" (np.ndarray): The data of the variable, with shape (number_of_elements, dimension).
-        variables_node (dict): Node-wise variables, where keys are
+            "data" (np.ndarray): The data of the variable.
+        variables_node (dict[str, np.ndarray], optional): Node-wise variables. Defaults to {}. Each keys are
             "name" (str): The name of the variable.
-            "data" (np.ndarray): The data of the variable, with shape (number_of_nodes, dimension).
-    Note:
-        Node index in Ensight gold file format is started from 1.
+            "data" (np.ndarray): The data of the variable.
     """
-    def __init__(self, id:int, name:str, nodes:np.ndarray, elements:list[dict], variables_element:dict = {}, variables_node:dict = {})->None:
+    def __init__(self, filename:str, id:int, name:str, dim:int, nodes:np.ndarray, elements:list[list[np.ndarray]], variables_element:dict[str, np.ndarray] = {}, variables_node:dict[str, np.ndarray] = {})->None:
+        self.filename = filename
         self.id = id
         self.name = name
+        self.dim = dim
         self.nodes = nodes
         self.elements = elements
         self.variables_element = variables_element
         self.variables_node = variables_node
-    
-    def split_element_category(self)->list[tuple[str, list]]:
-        element_category = []
-        current_type = self.elements[0]["type"]
-        current_elements = [self.elements[0]["structure"]]
 
-        for element in self.elements[1:]:
-            if current_type == element["type"]:
-                current_elements.append(element["structure"])
-            else:
-                element_category.append((current_type, current_elements))
-                current_type = element["type"]
-                current_elements = [element["structure"]]
-        element_category.append((current_type, current_elements))
-        return element_category
+    @property
+    def number_of_nodes(self)->int:
+        """Returns the number of nodes in the geometry.
+
+        Returns:
+            int: The number of nodes in the geometry.
+        """
+        return self.nodes.shape[0]
+    
+    @property
+    def number_of_elements(self)->int:
+        """Returns the number of elements in the geometry.
+
+        Returns:
+            int: The number of elements in the geometry.
+        """
+        return len(self.elements)
+    
+    def number_of_points(self, idx:int = None)->int|np.ndarray:
+        """Returns the number of points for the given element index or all elements.
+
+        Args:
+            idx (int, optional): The index of the element. Defaults to None. If None return one of all elements
+        Returns:
+            int|np.ndarray: The number of points for the given element index or all elements.
+        """
+        assert self.dim == 2, "This method is only available for 2D geometries."
+        if idx is None:
+            return np.array([len(element) for element in self.elements])
+        else:
+            return len(self.elements[idx])
+
+    def number_of_faces(self, idx:int = None)->int|np.ndarray:
+        """Returns the number of faces for the given element index or all elements.
+
+        Args:
+            idx (int, optional): The index of the element. Defaults to None. If None return one of all elements
+        Returns:
+            int|np.ndarray: The number of faces for the given element index or all elements.
+        """
+        assert self.dim == 3, "This method is only available for 3D geometries."
+        
+        if idx is None:
+            return np.array([len(element) for element in self.elements])
+        else:
+            return len(self.elements[idx])
     
     def load_variable_element(self, filename:str, var_name:str, var_type:str)->None:
-        """Load element-wise variables from a file.
+        """Load an element-wise variable from a file.
+        
+        Add this variables in self.variable_element
 
-        Update the `variables_element` attribute with the data from the file.
         Args:
-            filename (str): The path to the variable file.
+            filename (str): The name of the file to load the variable from.
             var_name (str): The name of the variable to load.
-            var_type (str): The type of the variable to load. "scalar" or "vector".
+            var_type (str): The type of the variable to load ("scalar" or "vector").
         """
-        self.variables_element[var_name] = read_variable_element(self, filename, self.id, var_type)
-    
-    def set_variable_element(self, var_name:str, data:np.ndarray)->None:
-        """Set element-wise variable data.
+        with open(filename, 'r') as file:
+            lines = file.readlines()[1:]
+        part_lines = utils.split_parts_description(lines)
+        id_series = [int(pl[1]) for pl in part_lines]
+        part_lines = part_lines[id_series.index(self.id)]
 
-        Args:
-            var_name (str): The name of the variable to set.
-            data (np.ndarray): The data of the variable, with shape (number_of_elements, dimension).
-        """
+        if var_type == "scalar":
+            data = np.array([float(line.strip()) for line in part_lines[2:] if line.strip() not in config.element_names[self.dim]])
+        else:
+            data = []
+            current_idx = 2
+            while current_idx < len(part_lines):
+                element_type = part_lines[current_idx].strip()
+                current_idx += 1
+                d = []
+                while current_idx < len(part_lines) and (part_lines[current_idx].strip() not in config.element_names[self.dim]):
+                    d.append(float(part_lines[current_idx].strip()))
+                    current_idx += 1
+                d = (np.array(d).reshape((3,-1))).T
+                data.append(d)
+            data = np.concatenate(data)
         self.variables_element[var_name] = data
-    
-    def export_variable_element(self, filename:str, var_name:str)->None:
-        """Export element-wise variable data to a file.
+
+def read_geometries(filename:str)->list[Geometry]:
+    """Read the geometries from a mesh file.
+
+    Geometry means one part defined in a geometry file. Therefore, if "n" parts are defined in the file, the length of output equals to "n".
+
+    Args:
+        filename (str): Geometry file name.
+    Returns:
+        list[Geometry]: A list of geometries.
+    """
+    def read_geometry(lines:list[str])->Geometry:
+        """Read a geometry from a list of lines.
 
         Args:
-            filename (str): The path to the output file.
-            var_name (str): The name of the variable to export.
+            lines (list[str]): The lines defining the geometry. lines[0] must be "part".
+        Returns:
+            Geometry: The geometry defined by the lines.
         """
-        write_variable_element(self, filename, var_name)
+        assert lines[0].strip() == "part", "The first line must be 'part'"
+        current_idx = 1
+        part_id = int(lines[current_idx].strip())
+        current_idx += 1
 
-def write_variable_element(geom:Geometry, filename:str, var_name:str)->None:
-    """Write element-wise variable data to a file.
+        part_name = lines[current_idx].strip()
+        current_idx += 2 #Ignore "coordinates" line
 
-    Args:
-        geom (Geometry): _description_
-        filename (str): _description_
-        var_name (str): _description_
+        number_of_nodes = int(lines[current_idx].strip())
+        current_idx += 1
 
-    Raises:
-        NotImplementedError: _description_
-    """
-    data = geom.variables_element[var_name]
-    element_category = geom.split_element_category()
-    element_type = [info[0] for info in element_category]
-    element_start_idx = [0]+[len(info[1]) for info in element_category[:-1]]
-    def write_scalar()->None:
-        with open(filename, 'w') as file:
-            file.write(f"{var_name}\n")
-            file.write("part\n")
-            file.write(f"{geom.id}\n")
+        x = np.array([float(lines[current_idx+n].strip()) for n in range(number_of_nodes)])
+        current_idx += number_of_nodes
+        y = np.array([float(lines[current_idx+n].strip()) for n in range(number_of_nodes)])
+        current_idx += number_of_nodes
+        z = np.array([float(lines[current_idx+n].strip()) for n in range(number_of_nodes)])
+        current_idx += number_of_nodes
+        nodes = np.column_stack((x, y, z))
 
-            for idx, te in enumerate(element_type):
-                file.write(f"{te}\n")
-                data_element = data[element_start_idx[idx]:element_start_idx[idx+1]] if idx < (len(element_start_idx) - 1) else data[element_start_idx[idx]:]
-                for d in data_element:
-                    file.write(f"{d}\n")
-    
-    def write_vector()->None:
-        with open(filename, 'w') as file:
-            file.write(f"{var_name}\n")
-            file.write("part\n")
-            file.write(f"{geom.id}\n")
+        #####Read element information
+        elements = []
 
-            for idx, te in enumerate(element_type):
-                file.write(f"{te}\n")
-                datax_element = data[element_start_idx[idx]:element_start_idx[idx+1],0] if idx < (len(element_start_idx) - 1) else data[element_start_idx[idx]:,0]
-                datay_element = data[element_start_idx[idx]:element_start_idx[idx+1],1] if idx < (len(element_start_idx) - 1) else data[element_start_idx[idx]:,1]
-                dataz_element = data[element_start_idx[idx]:element_start_idx[idx+1],2] if idx < (len(element_start_idx) - 1) else data[element_start_idx[idx]:,2]
-                for dx in datax_element:
-                    file.write(f"{dx}\n")
-                for dy in datay_element:
-                    file.write(f"{dy}\n")
-                for dz in dataz_element:
-                    file.write(f"{dz}\n")
+        def get_structures(element_type:str, number_of_element:int, current_idx:int)->tuple[list[any], int]:
+            """Get structure information
 
-    if data.ndim == 1:
-        write_scalar()
-    else:
-        write_vector()
+            Args:
+                element_type (str): The type of the element.
+                number_of_element (int): The number of elements.
+                current_idx (int): The current line index in the file.
+            Raises:
+                NotImplementedError: If the element type is not supported.
+            Returns:
+                list[any]: Structures of each elements. If element_type equals "nfaced", the structure is a list of numpy arrays. Otherwise, it is a numpy array.
+                int: The updated current index.
+            """
+            if element_type == "nsided":
+                raise NotImplementedError("nsided element type is not supported yet.")
+            elif element_type == "nfaced":
+                raise NotImplementedError("nfaced element type is not supported yet.")
+            else:
+                structures = [np.array([int(n)-1 for n in lines[current_idx+ne].split()]) for ne in range(number_of_element)]
+                current_idx += number_of_element
+                return structures, current_idx
 
-def read_variable_element(geom:Geometry, filename:str, part_id:int, var_type:str)->np.ndarray:
-    """Read element-wise variable data from a file.
-    """
-    def read_scalar(geom:Geometry, filename:str, part_id:int)->np.ndarray:
-        with open(filename, 'r') as file:
-            lines = file.readlines()[1:] #Ignore description line
+        while current_idx < len(lines):
+            element_type = lines[current_idx].strip()
+            current_idx += 1
+            number_of_element = int(lines[current_idx].strip())
+            current_idx += 1
 
-        index_start = None
-        index_end = len(lines) - 1
-        for idx in range(len(lines)):
-            if lines[idx].strip() == "part":
-                idx += 1
-                if int(lines[idx].strip()) == part_id:
-                    index_start = idx + 1
-                    break
-        for idx in range(index_start, len(lines)):
-            if lines[idx].strip() == "part":
-                index_end = idx - 1
-                break
+            structures, current_idx = get_structures(element_type, number_of_element, current_idx)
+            elements  += [{"type":element_type, "structure":structure} for structure in structures]
         
-        lines = lines[index_start:index_end + 1]
-        element_info = geom.split_element_category()
-        element_num = [len(info[1]) for info in element_info]
+        dimension = np.array([utils.get_dimension(element["type"]) for element in elements])
+        assert np.all(dimension == dimension[0]), "Assume all elements must have the same dimension."
+        dim = dimension[0]
+        ####Convert element data structure to nsided or nfaced
+        elements = [utils.convert2nsided(element) for element in elements] if dim == 2 else [utils.convert2nfaced(element) for element in elements]
 
-        data = []
-        current_idx = 0
-        for num in element_num:
-            current_idx += 1 #Ignore element type
-            d = np.array([float(lines[current_idx + i].strip()) for i in range(num)])
-            current_idx += num
-            data.append(d)
+        return Geometry(filename, part_id, part_name, dim, nodes, elements)
 
-        data = np.concatenate(data)
-
-        return data
-    
-    def read_vector(geom:Geometry, filename:str, part_id:int)->np.ndarray:
-        with open(filename, 'r') as file:
-            lines = file.readlines()[1:] #Ignore description line
-        
-        index_start = None
-        index_end = len(lines) - 1
-        for idx in range(len(lines)):
-            if lines[idx].strip() == "part":
-                idx += 1
-                if int(lines[idx].strip()) == part_id:
-                    index_start = idx + 1
-                    break
-        for idx in range(index_start, len(lines)):
-            if lines[idx].strip() == "part":
-                index_end = idx - 1
-                break
-        
-        lines = lines[index_start:index_end + 1]
-        element_info = geom.split_element_category()
-        element_num = [len(info[1]) for info in element_info]
-
-        datax = []
-        datay = []
-        dataz = []
-        current_idx = 0
-        for num in element_num:
-            current_idx += 1 #Ignore element type
-            dx = np.array([float(lines[current_idx + i].strip()) for i in range(num)])
-            current_idx += num
-            dy = np.array([float(lines[current_idx + i].strip()) for i in range(num)])
-            current_idx += num
-            dz = np.array([float(lines[current_idx + i].strip()) for i in range(num)])
-            current_idx += num
-            datax.append(dx)
-            datay.append(dy)
-            dataz.append(dz)
-
-        datax = np.concatenate(datax)
-        datay = np.concatenate(datay)
-        dataz = np.concatenate(dataz)
-
-        data = np.stack((datax, datay, dataz), axis=-1)
-
-        return data
-
-    if var_type == "scalar":
-        return read_scalar(geom, filename, part_id)
-    else:
-        return read_vector(geom, filename, part_id)
-
-
-
-def read_geometry(filename:str, partname:str)->Geometry:
-    """Read geometry data from a file.
-
-    Args:
-        filename (str): Path to the geometry file.
-        partname (str): Name of the part to read.
-    Returns:
-        Geometry: An instance of the Geometry class containing the read data.
-    Note:
-        * This function only reads internal mesh data.
-    """
-    part_id = utils.get_parts_names(filename).index(partname)+1
     with open(filename, 'r') as file:
         lines = file.readlines()
-    
-    index_floor = None
-    index_ceil = len(lines) - 1
-    for idx in range(len(lines)):
-        if lines[idx].strip() == "part":
-            idx += 2
-            if lines[idx].strip() == partname:
-                index_floor = idx
-                break
-    for idx in range(index_floor, len(lines)):
-        if lines[idx].strip() == "part":
-            index_ceil = idx - 1
-            break
-    
-    lines = lines[index_floor:index_ceil + 1]
-    current_idx = 2 #Ignore part name and "coordinate"
+    ###Ignore 4 lines (2 file description lines, node id information and element id information) 
+    lines = lines[4:]
+    part_lines = utils.split_parts_description(lines)
 
-    number_of_node = int(lines[current_idx].strip())
-    current_idx += 1
-    x = np.array([float(lines[current_idx+n].strip()) for n in range(number_of_node)])
-    current_idx += number_of_node
-    y = np.array([float(lines[current_idx+n].strip()) for n in range(number_of_node)])
-    current_idx += number_of_node
-    z = np.array([float(lines[current_idx+n].strip()) for n in range(number_of_node)])
-    current_idx += number_of_node
+    geometries = [deepcopy(read_geometry(part_line)) for part_line in part_lines]
 
-    nodes = np.column_stack((x, y, z))
+    return geometries
 
-    #####Read element information
-    elements = []
-
-    def get_structure(element_type:str, current_idx:int)->tuple[any, int]:
-        """Get structure information
-
-        Args:
-            element_type (str): The type of the element.
-            current_idx (int): The current line index in the file.
-        Raises:
-            NotImplementedError: If the element type is not supported.
-        Returns:
-            tuple[any, int]: Structure and current index. The structure is a numpy array of integers representing the element connectivity except the case of "nsided" and "nfaced".
-        """
-        if element_type == "nsided":
-            raise NotImplementedError("nsided element type is not supported yet.")
-        elif element_type == "nfaced":
-            raise NotImplementedError("nfaced element type is not supported yet.")
-        else:
-            structure = np.array([int(n)-1 for n in lines[current_idx].split()])
-            return structure, current_idx + 1
-
-    while current_idx < len(lines):
-        element_type = lines[current_idx].strip()
-        current_idx += 1
-        number_of_element = int(lines[current_idx].strip())
-        current_idx += 1
-
-        for _ in range(number_of_element):
-            structure, current_idx = get_structure(element_type, current_idx)
-            elements.append({"type":element_type, "structure":structure})
-        
-    return Geometry(id = part_id, name = partname, nodes=nodes, elements=elements)
-
-
-def write_geometry(geom:Geometry, filename:str, partname:str = "geometry")->None:
-    """Write geometry data to a file.
+def write_geometries(filename:str, geometries:list[Geometry])->None:
+    """Write geometries to a file.
 
     Args:
-        geom (Geometry): The geometry data to write.
-        filename (str): The path to the output file.
-        partname (str, optional): The name of the part to write. Defaults to "geometry".
+        filename (str): The name of the file to write to.
+        geometries (list[Geometry]): The geometries to write.
     """
-    def write_element(file, structure:any, element_type:str)->None:
-        """Write element information to the file.
+    part_indices = [geometry.id for geometry in geometries]
+    argsorted_indices = np.argsort(part_indices)
 
-        Args:
-            file (_type_): gile object to write to
-            structure (any): element connectivity information
-            element_type (str): type of the element
-
-        Raises:
-            NotImplementedError: Please replace here for using nsided element
-            NotImplementedError: Please replace here for using nfaced element
-        """
-        if element_type == "nsided":
-            raise NotImplementedError("nsided element type is not supported yet.")
-        elif element_type == "nfaced":
-            raise NotImplementedError("nfaced element type is not supported yet.")
-        else:
-            assert isinstance(structure, np.ndarray), "Structure must be a numpy array."
-            s = ""
-            for st in structure:
-                s += f"{st + 1} "
-            file.write(s[:-1] + "\n")
     with open(filename, 'w') as file:
         file.write("Geometry of Ensigh gold format\n")
         file.write(f"This file was written by piEnsight\n")
         file.write("node id assign\n")
         file.write("element id assign\n")
-        file.write("part\n")
-        file.write("1\n")
-        file.write(f"{partname}\n")
-        file.write("coordinates\n")
-        file.write(f"{geom.nodes.shape[0]}\n")
-        for i in range(geom.nodes.shape[0]):
-            file.write(f"{geom.nodes[i, 0]}\n")
-        for i in range(geom.nodes.shape[0]):
-            file.write(f"{geom.nodes[i, 1]}\n")
-        for i in range(geom.nodes.shape[0]):
-            file.write(f"{geom.nodes[i, 2]}\n")
 
-        element_category = geom.split_element_category()
-        for element_type, structure in element_category:
-            file.write(f"{element_type}\n")
-            file.write(f"{len(structure)}\n")
+        for geometry in [geometries[i] for i in argsorted_indices]:
+            file.write("part\n")
+            file.write(f"{geometry.id}\n")
+            file.write(f"{geometry.name}\n")
+            file.write("coordinates\n")
+            file.write(f"{geometry.nodes.shape[0]}\n")
+            for i in range(geometry.nodes.shape[0]):
+                file.write(f"{geometry.nodes[i, 0]}\n")
+            for i in range(geometry.nodes.shape[0]):
+                file.write(f"{geometry.nodes[i, 1]}\n")
+            for i in range(geometry.nodes.shape[0]):
+                file.write(f"{geometry.nodes[i, 2]}\n")
+            
+            if geometry.dim == 2:
+                file.write("nsided\n")
+                file.write(f"{geometry.number_of_elements}\n")
 
-            for st in structure:
-                write_element(file, st, element_type)
+                for n_point in geometry.number_of_points():
+                    file.write(f"{n_point}\n")
+                for element in geometry.elements:
+                    file.write(f"{utils.arr2str(element+1)}\n")
+            else:
+                file.write("nfaced\n")
+                file.write(f"{geometry.number_of_elements}\n")
+
+                for n_face in geometry.number_of_faces():
+                    file.write(f"{n_face}\n")
+                for element in geometry.elements:
+                    for face in element:
+                        file.write(f"{len(face)}\n")
+                
+                for element in geometry.elements:
+                    for face in element:
+                        file.write(f"{utils.arr2str(face+1)}\n") # Increment face index because node index are defined from 1 in Ensight
+
+
+def write_variable_element(filename:str, geometries:list[Geometry], var_name:str, var_type:str)->None:
+    """Write a variable for each geometry to a file.
+
+    Args:
+        filename (str): The name of the file to write to.
+        geometries (list[Geometry]): The geometries to write.
+        var_name (str): The name of the variable.
+        var_type (str): The type of the variable (e.g., "scalar", "vector").
+    """
+    part_indices = [geometry.id for geometry in geometries]
+    argsorted_indices = np.argsort(part_indices)
+
+    with open(filename, 'w') as file:
+        file.write(f"variable {var_name}\n")
+
+        for geometry in [geometries[i] for i in argsorted_indices]:
+
+            file.write(f"part\n")
+            file.write(f"{geometry.id}\n")
+            if geometry.dim == 2:
+                file.write("nsided\n")
+            else:
+                file.write("nfaced\n")
+
+            data = geometry.variables_element[var_name] if var_type == "scalar" else geometry.variables_element[var_name].flatten("F")
+            for d in data:
+                file.write(f"{d}\n")
